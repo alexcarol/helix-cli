@@ -94,10 +94,13 @@ This enables two features:
 
 #### Plain HTML files (.plain.html)
 
-Plain HTML files contain only the main content and an optional metadata block. The CLI automatically:
-- Wraps content in `<html><head><body><header><main><footer>` structure
-- Merges in `head.html` content
-- The metadata block is removed from the rendered content and converted to meta tags in the `<head>`.
+Plain HTML files contain only the main content, like the `.plain.html` aem.page serves for a page. The CLI renders them the way aem.page renders the same content, through the same html pipeline used for `content/`:
+- The page is wrapped in the full `<html><head><body><header><main><footer>` structure, with `head.html` merged in.
+- Page metadata (the metadata block, wherever it is, and the project's `metadata.json` sheet) becomes meta tags in the `<head>`, and the metadata block is removed from the content.
+- Section metadata, headings, images and icons are rendered like on aem.page.
+- Requesting `<stem>.plain.html` directly (e.g. for nav, footer or fragment blocks) returns the fragment aem.page would serve.
+
+Content outside a section (including blocks) is put in a section of its own, and a `.plain.html` copied from aem.page keeps its section styles and image sizes. Markup that authored content cannot express (e.g. inline styles or scripts) is dropped, as it would be on aem.page; use a `.html` file to serve markup as-is.
 
 When a request resolves to `<stem>`, the CLI looks up `<stem>.html` first and falls back to `<stem>.plain.html`. Pass `--preferPlainHtml` to reverse this order — useful when you keep both files side-by-side and want the plain version to win:
 

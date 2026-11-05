@@ -284,10 +284,32 @@ export class HelixServer extends BaseServer {
   }
 
   /**
-   * Transforms .plain.html content into complete HTML with head.html.
-   * The fragment is rendered like aem.page renders the same content: wrapped in <main> and run
-   * through the same html2md -> helix-html-pipeline chain used for content/. If the pipeline
-   * fails to render it, the minimal local transformation is used instead.
+   * Renders .plain.html content like aem.page renders the same content: it is brought to its
+   * authored form and run through the same html2md -> helix-html-pipeline chain used for content/.
+   * @param {string} plainContent .plain.html content
+   * @param {Express.Request} req request; a `.plain.html` path renders a fragment (no <head>),
+   *   any other path a full page
+   * @param {string} [headHtml] head.html content, injected into full pages
+   * @returns {Promise<string|null>} rendered html, or null if the pipeline failed to render it
+   */
+  async renderPlainHtml(plainContent, req, headHtml) {
+    if (this._project.metadataSheet) {
+      this._project.metadataSheet.setCookie(req.headers.cookie || '');
+      await this._project.metadataSheet.ensureLoaded();
+    }
+    return renderContentHtml(utils.plainHtmlToContentDocument(plainContent), {
+      path: req.path,
+      log: this.log,
+      headHtml,
+      metadataSheetRows: this._project.metadataSheet?.getRows(),
+      headers: req.headers,
+      org: this._project.org,
+      site: this._project.site,
+    });
+  }
+
+  /**
+   * Transforms .plain.html content into complete HTML with head.html, as aem.page would render it.
    * @param {string} plainHtmlFile path to .plain.html file
    * @param {Express.Request} req request
    * @returns {Promise<string>} complete HTML document
@@ -298,37 +320,38 @@ export class HelixServer extends BaseServer {
     await this._project.headHtml.update();
     const headHtml = this._project.headHtml.localHtml || '';
 
-    if (this._project.metadataSheet) {
-      this._project.metadataSheet.setCookie(req.headers.cookie || '');
-      await this._project.metadataSheet.ensureLoaded();
+    const rendered = await this.renderPlainHtml(plainContent, req, headHtml);
+    // the pipeline failed to render (and logged why): fall back to a minimal wrap so local dev
+    // never breaks outright on a rendering bug.
+    return rendered ?? `<html><head>${headHtml}</head><body><header></header><main>${plainContent}</main><footer></footer></body></html>`;
+  }
+
+  /**
+   * Serves a .plain.html file requested directly (e.g. nav, footer or fragment blocks) as the
+   * fragment aem.page renders for it.
+   * @param {Express.Request} req request
+   * @param {Express.Response} res response
+   * @param {string} file path to the .plain.html file
+   */
+  async serveHtmlFolderFragment(req, res, file) {
+    const liveReload = this._liveReload;
+    if (liveReload) {
+      liveReload.startRequest(req.id, req.url);
     }
-    const rendered = await renderContentHtml(
-      utils.plainHtmlToContentDocument(plainContent),
-      {
-        path: req.path,
-        log: this.log,
-        headHtml,
-        metadataSheetRows: this._project.metadataSheet?.getRows(),
-        headers: req.headers,
-        org: this._project.org,
-        site: this._project.site,
-      },
-    );
-    if (rendered !== null) {
-      return rendered;
+
+    const plainContent = await readFile(file, 'utf-8');
+    const rendered = await this.renderPlainHtml(plainContent, req);
+    res.set({
+      'content-type': 'text/html; charset=utf-8',
+      'access-control-allow-origin': '*',
+    });
+    res.send(rendered ?? plainContent);
+
+    if (liveReload) {
+      liveReload.registerFile(req.id, file);
+      liveReload.endRequest(req.id);
     }
-
-    // Extract metadata and clean content
-    const { content, metadata } = utils.extractMetadataBlock(plainContent);
-
-    // Extract default metadata values from content
-    const defaults = utils.extractDefaultMetadata(content);
-
-    // Generate meta tags from metadata with defaults
-    const metaTags = utils.generateMetaTags(metadata, defaults);
-
-    // Wrap in complete HTML structure
-    return utils.wrapPlainHtml(content, headHtml, metaTags);
+    this.log.debug(`served HTML fragment ${file} for ${req.url}`);
   }
 
   /**
@@ -355,6 +378,13 @@ export class HelixServer extends BaseServer {
     // Resolve which file to serve (.html or .plain.html)
     const resolvedFile = await this.resolveHtmlFolderFile(relativePath);
     if (!resolvedFile) {
+      // .plain.html requested directly (e.g. nav, footer or fragment blocks): render the fragment
+      if (relativePath.endsWith('.plain.html')) {
+        const file = await this.resolveCandidate(relativePath);
+        if (file) {
+          return this.serveHtmlFolderFragment(req, res, file);
+        }
+      }
       // Serve static assets (e.g. .json) from the html-folder as-is
       if (relativePath.includes('.')) {
         return this.serveHtmlFolderStaticFile(req, res, next, relativePath);

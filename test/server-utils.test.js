@@ -349,6 +349,66 @@ describe('Utils Test', () => {
     });
   });
 
+  describe('plainHtmlToContentDocument', () => {
+    const main = (html) => utils.plainHtmlToContentDocument(html)
+      .match(/<main>([\s\S]*)<\/main>/)[1];
+
+    it('wraps a .plain.html fragment in a document with a <main>', () => {
+      assert.strictEqual(
+        utils.plainHtmlToContentDocument('<div><p>a</p></div><div><p>b</p></div>'),
+        '<html><head></head><body><main><div><p>a</p></div><div><p>b</p></div></main></body></html>',
+      );
+    });
+
+    it('uses an existing <main>', () => {
+      assert.strictEqual(
+        utils.plainHtmlToContentDocument('<html><head><title>T</title></head><body><header></header><main><div><p>a</p></div></main></body></html>'),
+        '<html><head><title>T</title></head><body><header></header><main><div><p>a</p></div></main></body></html>',
+      );
+    });
+
+    it('puts each run of content outside a section in a section of its own', () => {
+      assert.strictEqual(
+        main('<p>a</p>\n<div><p>b</p></div>\n<p>c</p><!-- c --><p>d</p>'),
+        '<div><p>a</p>\n</div><div><p>b</p></div>\n<div><p>c</p><!-- c --><p>d</p></div>',
+      );
+    });
+
+    it('puts blocks without a section in a section', () => {
+      assert.strictEqual(
+        main('<div class="hero"><div><div>a</div></div></div><div class="cards"><div><div>b</div><div>c</div></div></div><div><p>d</p></div>'),
+        '<div><div class="hero"><div><div>a</div></div></div><div class="cards"><div><div>b</div><div>c</div></div></div></div><div><p>d</p></div>',
+      );
+    });
+
+    it('turns rendered section classes, id and data attributes back into section metadata', () => {
+      assert.strictEqual(
+        main('<div class="highlight dark" id="intro" data-background="blue" data-bg-color="red,green"><p>a</p></div>'),
+        '<div><p>a</p><div class="section-metadata">'
+        + '<div><div>style</div><div>highlight, dark</div></div>'
+        + '<div><div>id</div><div>intro</div></div>'
+        + '<div><div>background</div><div>blue</div></div>'
+        + '<div><div>bg-color</div><div>red,green</div></div>'
+        + '</div></div>',
+      );
+    });
+
+    it('treats a styled section holding only a block as a section', () => {
+      assert.strictEqual(
+        main('<div class="highlight"><div class="cards"><div><div>a</div></div></div></div>'),
+        '<div><div class="cards"><div><div>a</div></div></div>'
+        + '<div class="section-metadata"><div><div>style</div><div>highlight</div></div></div></div>',
+      );
+    });
+
+    it('moves the size of rendered media images into their URL', () => {
+      assert.strictEqual(
+        main('<div><picture><img src="./media_1.png?width=750&format=png&optimize=medium" width="800" height="600" alt=""></picture><img src="/other.png" width="1" height="2"></div>'),
+        '<div><picture><img src="./media_1.png#width=800&#x26;height=600" width="800" height="600" alt=""></picture><img src="/other.png" width="1" height="2"></div>',
+      );
+    });
+  });
+
   describe('rewriteDaContentImageUrls', () => {
     it('rewrites content.da.live image src to the site preview domain', () => {
       const html = '<img src="https://content.da.live/bar/foo/media_123.png">';

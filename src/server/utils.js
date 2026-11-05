@@ -20,7 +20,7 @@ import { fileURLToPath } from 'url';
 import { parseCookie } from 'cookie';
 import { unified } from 'unified';
 import rehypeParse from 'rehype-parse';
-import { select } from 'hast-util-select';
+import { select, selectAll } from 'hast-util-select';
 import { toHtml } from 'hast-util-to-html';
 import { getFetch } from '../fetch-utils.js';
 
@@ -36,6 +36,100 @@ const DA_CONTENT_AUTH_SCRIPT = readFileSync(
   path.join(__dirname, '../../packages/browser-injectables/src/da-content-auth.js'),
   'utf-8',
 );
+
+/**
+ * @param {object} properties hast properties
+ * @param {object[]} [children] hast nodes
+ * @returns {object} a hast `div` element
+ */
+function div(properties, children = []) {
+  return {
+    type: 'element', tagName: 'div', properties, children,
+  };
+}
+
+function hasClass(node) {
+  return !!node.properties?.className?.length;
+}
+
+function elementChildren(node) {
+  return node.children.filter((n) => n.type === 'element');
+}
+
+/**
+ * A block is a `div` with a class whose children are class-less row `div`s made of class-less
+ * cell `div`s. Any other top-level `div` is a section.
+ * @param {object} node hast element
+ * @returns {boolean} true if the node is a block
+ */
+function isBlock(node) {
+  return hasClass(node) && elementChildren(node).every(($row) => $row.tagName === 'div'
+    && !hasClass($row)
+    && elementChildren($row).every(($cell) => $cell.tagName === 'div' && !hasClass($cell)));
+}
+
+/**
+ * The html pipeline turns a section-metadata block into the section's classes (`style`), `id`
+ * and `data-*` attributes, so a .plain.html copied from aem.page has them already applied.
+ * html2md only knows the authored form and drops section attributes, so turn them back into a
+ * section-metadata block.
+ * @param {object} $section hast section `div`
+ * @returns {object} the section in its authored form
+ */
+function toAuthoredSection($section) {
+  const { className = [], id, ...properties } = $section.properties;
+  const rows = [];
+  if (className.length) {
+    rows.push(['style', className.join(', ')]);
+  }
+  if (id) {
+    rows.push(['id', String(id)]);
+  }
+  Object.entries(properties)
+    .filter(([name]) => /^data[A-Z0-9]/.test(name))
+    .forEach(([name, value]) => rows.push([
+      // hast stores `data-foo-bar` as `dataFooBar`
+      name.slice(4).replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`).replace(/^-/, ''),
+      String(value),
+    ]));
+  if (!rows.length) {
+    return $section;
+  }
+  return div({}, [
+    ...$section.children,
+    div({ className: ['section-metadata'] }, rows.map(([name, value]) => div({}, [
+      div({}, [{ type: 'text', value: name }]),
+      div({}, [{ type: 'text', value }]),
+    ]))),
+  ]);
+}
+
+/**
+ * Groups top-level content into sections, the only top-level nodes html2md keeps: runs of
+ * content outside a section `div` (including blocks without a section) get a section of their
+ * own, and sections are brought back to their authored form.
+ * @param {object[]} nodes top-level hast nodes
+ * @returns {object[]} section `div`s
+ */
+function toSections(nodes) {
+  const sections = [];
+  let stray = null;
+  nodes.forEach((node) => {
+    if (node.type === 'element' && node.tagName === 'div' && !isBlock(node)) {
+      stray = null;
+      sections.push(toAuthoredSection(node));
+    } else if (node.type === 'comment' || (node.type === 'text' && !node.value.trim())) {
+      (stray?.children ?? sections).push(node);
+    } else {
+      if (!stray) {
+        stray = div({});
+        sections.push(stray);
+      }
+      stray.children.push(node);
+    }
+  });
+  return sections;
+}
 
 const utils = {
   status2level(status, debug3xx) {
@@ -538,48 +632,6 @@ window.LiveReloadOptions = {
   },
 
   /**
-   * Escapes HTML entities for use in attributes
-   * @param {string} text text to escape
-   * @returns {string} escaped text
-   */
-  escapeHtml(text) {
-    return text
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#039;');
-  },
-
-  /**
-   * Extracts text content from HTML using proper HTML parsing
-   * @param {string} html HTML content to extract text from
-   * @returns {string} plain text content
-   */
-  extractTextFromHtml(html) {
-    // Helper to recursively extract text from AST nodes
-    function extractText(node) {
-      if (node.type === 'text') {
-        return node.value;
-      }
-      if (node.children) {
-        return node.children.map(extractText).join('');
-      }
-      return '';
-    }
-
-    try {
-      const ast = unified()
-        .use(rehypeParse, { fragment: true })
-        .parse(html);
-      return extractText(ast).trim();
-    } catch (e) {
-      // If parsing fails, return empty string to avoid XSS vulnerabilities
-      return '';
-    }
-  },
-
-  /**
    * Validates that a file path is within a base directory (security check)
    * @param {string} filePath absolute file path to validate
    * @param {string} baseDirectory base directory path
@@ -589,211 +641,6 @@ window.LiveReloadOptions = {
     const resolvedBaseDir = path.resolve(baseDirectory);
     const relPath = path.relative(resolvedBaseDir, filePath);
     return !relPath.startsWith('..');
-  },
-
-  /**
-   * Extracts metadata block from plain HTML content
-   * @param {string} html HTML content with potential metadata block
-   * @returns {{content: string, metadata: object}} cleaned content and metadata object
-   */
-  extractMetadataBlock(html) {
-    // The metadata block structure is:
-    // <div>
-    //   <div class="metadata">
-    //     <div><div>key</div><div>value</div></div>
-    //   </div>
-    // </div>
-
-    // Find the outer div containing the metadata div
-    const outerDivRegex = /<div>\s*<div class="metadata">/;
-    const outerMatch = html.match(outerDivRegex);
-
-    if (!outerMatch) {
-      return { content: html, metadata: {} };
-    }
-
-    // Find the matching closing </div></div> by counting nested divs
-    // Start after <div><div class="metadata">
-    const startIndex = outerMatch.index + outerMatch[0].length;
-    let depth = 2; // Already inside two divs
-    let endIndex = startIndex;
-    let closingDivCount = 0;
-
-    for (let i = startIndex; i < html.length && closingDivCount < 2; i += 1) {
-      if (html.substr(i, 5) === '<div>') {
-        depth += 1;
-      } else if (html.substr(i, 6) === '</div>') {
-        depth -= 1;
-        if (depth < 2) {
-          closingDivCount += 1;
-          if (closingDivCount === 2) {
-            endIndex = i + 6; // Include the last </div>
-          }
-        }
-      }
-    }
-
-    if (closingDivCount !== 2) {
-      // Malformed HTML, return as-is
-      return { content: html, metadata: {} };
-    }
-
-    // Extract the metadata block content and remove entire outer div from HTML
-    const fullMetadataBlock = html.substring(outerMatch.index, endIndex);
-    const metadataBlock = html.substring(startIndex, endIndex - 12); // -12 for </div></div>
-    const cleanedContent = html.replace(fullMetadataBlock, '').trim();
-
-    // Parse metadata block to extract key-value pairs
-    const pairRegex = /<div>\s*<div>([^<]+)<\/div>\s*<div>([\s\S]*?)<\/div>\s*<\/div>/g;
-    const metadata = {};
-    let pairMatch;
-
-    // eslint-disable-next-line no-cond-assign
-    while ((pairMatch = pairRegex.exec(metadataBlock)) !== null) {
-      const key = pairMatch[1].trim();
-      let value = pairMatch[2].trim();
-
-      // Handle <img> tags - extract src
-      const imgMatch = value.match(/<img[^>]+src="([^"]+)"/);
-      if (imgMatch) {
-        [, value] = imgMatch;
-      } else {
-        // Use proper HTML parsing to extract text content
-        value = utils.extractTextFromHtml(value);
-      }
-
-      metadata[key] = value;
-    }
-
-    return { content: cleanedContent, metadata };
-  },
-
-  /**
-   * Extracts default metadata values from HTML content
-   * @param {string} content HTML content to extract defaults from
-   * @returns {object} default metadata values
-   */
-  extractDefaultMetadata(content) {
-    const defaults = {};
-
-    // Extract title from first H1
-    const h1Match = content.match(/<h1[^>]*>(.*?)<\/h1>/i);
-    if (h1Match) {
-      // Use proper HTML parsing to extract text
-      defaults.title = utils.extractTextFromHtml(h1Match[1]);
-    }
-
-    // Extract description from first paragraph with 10+ words
-    const pMatch = content.match(/<p[^>]*>(.*?)<\/p>/i);
-    if (pMatch) {
-      // Use proper HTML parsing to extract text
-      const text = utils.extractTextFromHtml(pMatch[1]);
-      const wordCount = text.split(/\s+/).length;
-      if (wordCount >= 10) {
-        defaults.description = text;
-      }
-    }
-
-    // Extract image from first img tag
-    const imgMatch = content.match(/<img[^>]+src="([^"]+)"/i);
-    if (imgMatch) {
-      [, defaults.image] = imgMatch;
-    }
-
-    return defaults;
-  },
-
-  /**
-   * Generates meta tags from metadata object with AEM.live special property support
-   * @param {object} metadata key-value pairs of metadata
-   * @param {object} defaults default values extracted from content
-   * @returns {string} HTML string of meta tags
-   */
-  generateMetaTags(metadata, defaults = {}) {
-    // Handle title:suffix special property
-    let title = metadata.title || defaults.title || '';
-    const titleSuffix = metadata['title:suffix'];
-    if (titleSuffix && title) {
-      title = `${title} ${titleSuffix}`;
-    }
-
-    // Apply defaults for missing values
-    const description = metadata.description || defaults.description || '';
-    const image = metadata.image || defaults.image || '/default-meta-image.png';
-
-    // Build final metadata object with computed values
-    const finalMetadata = { ...metadata };
-    if (title) {
-      finalMetadata.title = title;
-    }
-    if (description) {
-      finalMetadata.description = description;
-    }
-    if (image) {
-      finalMetadata.image = image;
-    }
-
-    // Remove special properties that shouldn't become meta tags
-    delete finalMetadata['title:suffix'];
-
-    // Generate meta tags (both standard and OG format)
-    const ogFields = ['title', 'description', 'image', 'url'];
-    let metaTags = '';
-
-    // Add <title> tag if title exists
-    if (title) {
-      metaTags += `<title>${utils.escapeHtml(title)}</title>`;
-    }
-
-    // eslint-disable-next-line no-restricted-syntax
-    for (const [key, value] of Object.entries(finalMetadata)) {
-      // Skip empty values
-      if (!value) {
-        // eslint-disable-next-line no-continue
-        continue;
-      }
-
-      // Handle 'tags' property specially - create article:tag for each
-      if (key === 'tags') {
-        // Split by comma or newline
-        const tagList = value.split(/[,\n]/).map((t) => t.trim()).filter((t) => t);
-        // eslint-disable-next-line no-restricted-syntax
-        for (const tag of tagList) {
-          metaTags += `<meta property="article:tag" content="${utils.escapeHtml(tag)}">`;
-        }
-        // Don't create standard name= tag for 'tags'
-      } else if (key === 'canonical') {
-        // Handle canonical specially
-        metaTags += `<link rel="canonical" href="${utils.escapeHtml(value)}">`;
-        metaTags += `<meta property="og:url" content="${utils.escapeHtml(value)}">`;
-        metaTags += `<meta name="twitter:url" content="${utils.escapeHtml(value)}">`;
-        // Don't create standard name= tag
-      } else {
-        // Standard meta tag
-        metaTags += `<meta name="${key}" content="${utils.escapeHtml(value)}">`;
-
-        // Open Graph meta tag for common fields
-        if (ogFields.includes(key.toLowerCase())) {
-          metaTags += `<meta property="og:${key}" content="${utils.escapeHtml(value)}">`;
-          // Add twitter card tags for common fields
-          metaTags += `<meta name="twitter:${key}" content="${utils.escapeHtml(value)}">`;
-        }
-      }
-    }
-
-    return metaTags;
-  },
-
-  /**
-   * Wraps plain HTML content in complete HTML structure
-   * @param {string} content plain HTML content
-   * @param {string} headHtml head.html content
-   * @param {string} metaTags generated meta tags
-   * @returns {string} complete HTML document
-   */
-  wrapPlainHtml(content, headHtml, metaTags) {
-    const fullHead = headHtml + metaTags;
-    return `<html><head>${fullHead}</head><body><header></header><main>${content}</main><footer></footer></body></html>`;
   },
 
   /**
@@ -882,37 +729,30 @@ window.LiveReloadOptions = {
   },
 
   /**
-   * Turns a .plain.html fragment into the document shape html2md expects: a <main> whose
-   * children are section <div>s (html2md drops anything else). Runs of top-level content outside
-   * a section <div> are wrapped in a section of their own. Content that already has a <main> is
-   * returned unchanged.
-   * @param {string} html .plain.html content
-   * @returns {string} html with a <main> made of sections
+   * Turns .plain.html content into the authored document html2md expects, so it can be rendered
+   * by the html pipeline like aem.page renders it: a <main> made only of section `div`s, with
+   * section-metadata in its authored form (see `toSections` and `toAuthoredSection`), and media
+   * images with their size in the URL, as html2md produces them.
+   * @param {string} html .plain.html content (a fragment, or a document with a <main>)
+   * @returns {string} html document with a <main>
    */
   plainHtmlToContentDocument(html) {
-    if (/<main[\s>]/i.test(html)) {
-      return html;
+    const tree = htmlParser.parse(html);
+    let $main = select('main', tree);
+    if (!$main) {
+      const $body = select('body', tree);
+      $main = {
+        type: 'element', tagName: 'main', properties: {}, children: $body.children,
+      };
+      $body.children = [$main];
     }
-    const tree = unified().use(rehypeParse, { fragment: true }).parse(html);
-    const sections = [];
-    let stray = null;
-    tree.children.forEach((node) => {
-      if (node.type === 'element' && node.tagName === 'div') {
-        stray = null;
-        sections.push(node);
-      } else if (node.type === 'comment' || (node.type === 'text' && !node.value.trim())) {
-        (stray?.children ?? sections).push(node);
-      } else {
-        if (!stray) {
-          stray = {
-            type: 'element', tagName: 'div', properties: {}, children: [],
-          };
-          sections.push(stray);
-        }
-        stray.children.push(node);
-      }
+    $main.children = toSections($main.children);
+    // aem.page renders the size of media images from their URL: keep it
+    selectAll('img[src^="./media_"][width][height]', $main).forEach(($img) => {
+      const { src, width, height } = $img.properties;
+      Object.assign($img.properties, { src: `${src.split(/[?#]/)[0]}#width=${width}&height=${height}` });
     });
-    return `<main>${toHtml({ type: 'root', children: sections })}</main>`;
+    return toHtml(tree);
   },
 };
 

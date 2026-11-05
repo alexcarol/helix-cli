@@ -16,13 +16,15 @@
 /**
  * Parity check: a `.plain.html` file served by `aem up --html-folder` must render the same way
  * the html pipeline (`html2md` -> `helix-html-pipeline`, i.e. what aem.page runs, and what the
- * CLI already uses for `content/`) renders the same content at the same path.
+ * CLI already uses for `content/`) renders the authored content at the same path.
  *
- * The rendered documents are compared on three normalized aspects, so a failure shows which
- * part diverges:
+ * The rendered pages are compared on three normalized aspects, so a failure shows which part
+ * diverges, and the `.plain.html` fragments on a fourth:
  * - page metadata: `<title>`, `<meta name>` (except `twitter:*`) and `article:*` tags;
  * - social metadata: `og:*`, `twitter:*` and the canonical link;
- * - the `<main>` content (whitespace-only text and comments ignored).
+ * - the `<main>` content;
+ * - the fragment served for `<name>.plain.html`.
+ * Whitespace-only text, comments and attribute order are ignored.
  */
 import os from 'os';
 import assert from 'assert';
@@ -70,6 +72,37 @@ const FIXTURES = {
   sheet: '<div><h1>Sheet metadata</h1><p>Body.</p></div>',
 };
 
+// .plain.html files that differ from the authored content they must render like
+const ADAPTED_FIXTURES = {
+  // a block without a section around it
+  'block-outside-section': {
+    plain: `<div class="hero"><div><div><h1>Hero</h1><p>Intro text.</p></div></div></div>
+<div><p>Next section.</p></div>`,
+    authored: `<div><div class="hero"><div><div><h1>Hero</h1><p>Intro text.</p></div></div></div></div>
+<div><p>Next section.</p></div>`,
+  },
+
+  // content without any section
+  'content-outside-section': {
+    plain: '<h1>Loose content</h1><p>No section here.</p>',
+    authored: '<div><h1>Loose content</h1><p>No section here.</p></div>',
+  },
+
+  // a copy of the .plain.html aem.page serves for the authored content (rendered in `before`),
+  // i.e. with section metadata and media images already rendered
+  'copied-from-aem-page': {
+    authored: `<div><h1>Copied</h1><p><img src="./media_1234.png#width=800&height=600" alt="Media"></p><p>Text.</p>
+<div class="section-metadata"><div><div>Style</div><div>highlight, dark</div></div><div><div>Background</div><div>blue</div></div><div><div>Id</div><div>intro</div></div></div></div>
+<div><div class="cards"><div><div>a</div><div>b</div></div></div></div>`,
+  },
+};
+
+const ALL_FIXTURES = {
+  ...Object.fromEntries(Object.entries(FIXTURES)
+    .map(([name, html]) => [name, { plain: html, authored: html }])),
+  ...ADAPTED_FIXTURES,
+};
+
 function parse(html) {
   return unified().use(rehypeParse).parse(html);
 }
@@ -104,6 +137,10 @@ function socialMetadata(tree) {
 }
 
 function stripInsignificant(node) {
+  if (node.properties) {
+    // eslint-disable-next-line no-param-reassign
+    node.properties = Object.fromEntries(Object.entries(node.properties).sort());
+  }
   if (node.children) {
     // eslint-disable-next-line no-param-reassign
     node.children = node.children
@@ -116,6 +153,10 @@ function stripInsignificant(node) {
 function mainContent(tree) {
   const $main = select('main', tree);
   return $main ? toHtml(stripInsignificant(structuredClone($main))) : null;
+}
+
+function fragmentContent(html) {
+  return toHtml(stripInsignificant(unified().use(rehypeParse, { fragment: true }).parse(html)));
 }
 
 const silentLog = {
@@ -135,10 +176,17 @@ describe('Helix Server - HTML Folder .plain.html parity with the html pipeline',
     const cwd = await setupProject(path.join(__rootdir, 'test', 'fixtures', 'project'), testRoot);
     headHtml = (await fs.readFile(path.join(cwd, 'head.html'), 'utf-8')).trim();
 
+    const copied = ALL_FIXTURES['copied-from-aem-page'];
+    copied.plain = await renderContentHtml(`<main>${copied.authored}</main>`, {
+      path: `/${HTML_FOLDER}/copied-from-aem-page.plain.html`,
+      log: silentLog,
+    });
+    assert.ok(copied.plain?.includes('<picture>'), 'html pipeline failed to render the copied fixture');
+
     const folder = path.join(cwd, HTML_FOLDER);
     await fs.mkdir(folder, { recursive: true });
-    await Promise.all(Object.entries(FIXTURES)
-      .map(([name, html]) => fs.writeFile(path.join(folder, `${name}.plain.html`), html)));
+    await Promise.all(Object.entries(ALL_FIXTURES)
+      .map(([name, { plain }]) => fs.writeFile(path.join(folder, `${name}.plain.html`), plain)));
 
     nock(PROXY_URL)
       .get('/head.html')
@@ -167,10 +215,12 @@ describe('Helix Server - HTML Folder .plain.html parity with the html pipeline',
     nock.done();
   });
 
-  Object.entries(FIXTURES).forEach(([name, plainHtml]) => {
+  Object.entries(ALL_FIXTURES).forEach(([name, { authored }]) => {
     describe(`${name}.plain.html`, () => {
       let actual;
       let expected;
+      let actualFragment;
+      let expectedFragment;
 
       before(async () => {
         const host = `127.0.0.1:${project.server.port}`;
@@ -179,16 +229,30 @@ describe('Helix Server - HTML Folder .plain.html parity with the html pipeline',
         assert.strictEqual(resp.status, 200);
         actual = parse(await resp.text());
 
-        // what aem.page renders for the same content at the same path
-        const rendered = await renderContentHtml(`<body><main>${plainHtml}</main></body>`, {
-          path: pathname,
+        const fragmentResp = await fetch(`http://${host}${pathname}.plain.html`);
+        assert.strictEqual(fragmentResp.status, 200);
+        actualFragment = fragmentContent(await fragmentResp.text());
+
+        // what aem.page renders for the authored content at the same paths
+        const options = {
           log: silentLog,
           headHtml,
           metadataSheetRows: SHEET_ROWS,
           headers: { host },
+        };
+        const rendered = await renderContentHtml(`<body><main>${authored}</main></body>`, {
+          ...options,
+          path: pathname,
         });
         assert.ok(rendered, 'html pipeline failed to render the fixture');
         expected = parse(rendered);
+
+        const renderedFragment = await renderContentHtml(`<body><main>${authored}</main></body>`, {
+          ...options,
+          path: `${pathname}.plain.html`,
+        });
+        assert.ok(renderedFragment, 'html pipeline failed to render the fixture fragment');
+        expectedFragment = fragmentContent(renderedFragment);
       });
 
       it('has the same page metadata (<title>, <meta name>, article:*)', () => {
@@ -201,6 +265,10 @@ describe('Helix Server - HTML Folder .plain.html parity with the html pipeline',
 
       it('has the same <main> content', () => {
         assert.strictEqual(mainContent(actual), mainContent(expected));
+      });
+
+      it('has the same .plain.html fragment', () => {
+        assert.strictEqual(actualFragment, expectedFragment);
       });
     });
   });

@@ -15,6 +15,7 @@
 /* eslint-disable no-console */
 import os from 'os';
 import assert from 'assert';
+import esmock from 'esmock';
 import fs from 'fs/promises';
 import fse from 'fs-extra';
 import path from 'path';
@@ -269,7 +270,7 @@ describe('Helix Server - HTML Folder', () => {
       assert.ok(content.includes('<p>Plain content here</p>'), 'Should contain plain content in main');
       assert.ok(content.includes('</main>'), 'Should close main tag');
       assert.ok(content.includes('<footer></footer>'), 'Should include empty footer');
-      assert.ok(content.includes('</body></html>'), 'Should close body and html tags');
+      assert.match(content, /<\/body>\s*<\/html>/, 'Should close body and html tags');
       assert.ok(content.includes('<meta name="test" content="local-head">'), 'Should include head.html content');
     } finally {
       await project.stop();
@@ -570,7 +571,8 @@ describe('Helix Server - HTML Folder', () => {
       const content = await response.text();
       // Verify meta tags are present
       assert.ok(content.includes('<title>Test Page Title</title>'), 'Should have title tag');
-      assert.ok(content.includes('<meta name="title" content="Test Page Title">'), 'Should have standard title meta tag');
+      assert.ok(content.includes('<meta name="twitter:title" content="Test Page Title">'), 'Should have twitter:title meta tag');
+      assert.ok(!content.includes('<meta name="title"'), 'Should not have a name=title meta tag, like aem.page');
       assert.ok(content.includes('<meta property="og:title" content="Test Page Title">'), 'Should have og:title meta tag');
       assert.ok(content.includes('<meta name="description" content="This is a test description">'), 'Should have standard description meta tag');
       assert.ok(content.includes('<meta property="og:description" content="This is a test description">'), 'Should have og:description meta tag');
@@ -618,7 +620,8 @@ describe('Helix Server - HTML Folder', () => {
       const content = await response.text();
 
       // Verify image src is extracted
-      assert.ok(content.includes('<meta name="image" content="https://example.com/test.png">'), 'Should extract img src to meta tag');
+      assert.ok(content.includes('<meta name="twitter:image" content="https://example.com/test.png">'), 'Should extract img src to twitter:image meta tag');
+      assert.ok(!content.includes('<meta name="image"'), 'Should not have a name=image meta tag, like aem.page');
       assert.ok(content.includes('<meta property="og:image" content="https://example.com/test.png">'), 'Should have og:image meta tag');
       assert.ok(!content.includes('<img'), 'Should not contain img tag in body');
     } finally {
@@ -736,8 +739,7 @@ describe('Helix Server - HTML Folder', () => {
       const content = await response.text();
 
       // Verify special characters are escaped
-      assert.ok(content.includes('&quot;quotes&quot;'), 'Should escape quotes');
-      assert.ok(content.includes('&amp;'), 'Should escape ampersand');
+      assert.ok(content.includes('<meta property="og:title" content="Title with &#x22;quotes&#x22; &#x26; ampersand">'), 'Should escape quotes and ampersand');
     } finally {
       await project.stop();
     }
@@ -785,8 +787,9 @@ describe('Helix Server - HTML Folder', () => {
       const response = await fetch(`http://127.0.0.1:${project.server.port}/drafts/og-fields`);
       const content = await response.text();
 
-      // title should have both
-      assert.ok(content.includes('<meta name="title"'), 'Should have name=title');
+      // title goes to <title>, og:title and twitter:title, like aem.page
+      assert.ok(content.includes('<title>'), 'Should have title');
+      assert.ok(!content.includes('<meta name="title"'), 'Should NOT have name=title');
       assert.ok(content.includes('<meta property="og:title"'), 'Should have og:title');
 
       // author should only have name=
@@ -830,7 +833,7 @@ describe('Helix Server - HTML Folder', () => {
       const content = await response.text();
 
       // Should use H1 as default title
-      assert.ok(content.includes('<meta name="title" content="Page Heading">'), 'Should use H1 as default title');
+      assert.ok(content.includes('<title>Page Heading</title>'), 'Should use H1 as default title');
       assert.ok(content.includes('<meta property="og:title" content="Page Heading">'), 'Should have og:title from H1');
     } finally {
       await project.stop();
@@ -900,9 +903,9 @@ describe('Helix Server - HTML Folder', () => {
       const content = await response.text();
 
       // Should use first image as default
-      assert.ok(content.includes('<meta name="image" content="https://example.com/first-image.png">'), 'Should use first image as default');
+      assert.ok(content.includes('<meta property="og:image" content="https://example.com/first-image.png">'), 'Should use first image as default');
       // Note: second image will still be in the content body, just not in meta tags
-      assert.ok(!content.includes('<meta name="image" content="https://example.com/second-image.png">'), 'Should not use second image in meta tags');
+      assert.ok(!content.includes('content="https://example.com/second-image.png"'), 'Should not use second image in meta tags');
     } finally {
       await project.stop();
     }
@@ -948,7 +951,7 @@ describe('Helix Server - HTML Folder', () => {
 
       // Title should include suffix
       assert.ok(content.includes('<title>My Page | My Site</title>'), 'Should have title tag with suffix');
-      assert.ok(content.includes('<meta name="title" content="My Page | My Site">'), 'Should append suffix to title');
+      assert.ok(content.includes('<meta name="twitter:title" content="My Page | My Site">'), 'Should append suffix to twitter:title');
       assert.ok(content.includes('<meta property="og:title" content="My Page | My Site">'), 'Should have og:title with suffix');
       assert.ok(!content.includes('title:suffix'), 'Should not include title:suffix as separate meta tag');
     } finally {
@@ -956,7 +959,7 @@ describe('Helix Server - HTML Folder', () => {
     }
   });
 
-  it('handles canonical URL with og:url and twitter:url', async () => {
+  it('handles canonical URL with og:url', async () => {
     const cwd = await setupProject(path.join(__rootdir, 'test', 'fixtures', 'project'), testRoot);
 
     const draftsFolder = path.join(cwd, 'drafts');
@@ -993,7 +996,7 @@ describe('Helix Server - HTML Folder', () => {
       // Should have link rel=canonical
       assert.ok(content.includes('<link rel="canonical" href="https://example.com/canonical-page">'), 'Should have canonical link');
       assert.ok(content.includes('<meta property="og:url" content="https://example.com/canonical-page">'), 'Should have og:url');
-      assert.ok(content.includes('<meta name="twitter:url" content="https://example.com/canonical-page">'), 'Should have twitter:url');
+      assert.ok(!content.includes('twitter:url'), 'Should not have twitter:url, like aem.page');
       assert.ok(!content.includes('<meta name="canonical"'), 'Should not have name=canonical meta tag');
     } finally {
       await project.stop();
@@ -1071,8 +1074,9 @@ describe('Helix Server - HTML Folder', () => {
       const content = await response.text();
 
       // Should use default image
-      assert.ok(content.includes('<meta name="image" content="/default-meta-image.png">'), 'Should use default image');
-      assert.ok(content.includes('<meta property="og:image" content="/default-meta-image.png">'), 'Should have og:image with default');
+      const defaultImage = `http://127.0.0.1:${project.server.port}/default-meta-image.png?width=1200&#x26;format=pjpg&#x26;optimize=medium`;
+      assert.ok(content.includes(`<meta property="og:image" content="${defaultImage}">`), 'Should have og:image with default');
+      assert.ok(content.includes(`<meta name="twitter:image" content="${defaultImage}">`), 'Should have twitter:image with default');
     } finally {
       await project.stop();
     }
@@ -1120,7 +1124,7 @@ describe('Helix Server - HTML Folder', () => {
       // Should have local head.html content (HeadHtmlSupport uses local when both exist)
       assert.ok(content.includes('<meta name="local" content="local-value">'), 'Should include local head.html');
       // Should have extracted metadata
-      assert.ok(content.includes('<meta name="title" content="Test Page">'), 'Should have metadata');
+      assert.ok(content.includes('<title>Test Page</title>'), 'Should have metadata');
     } finally {
       await project.stop();
     }
@@ -1219,6 +1223,78 @@ describe('Helix Server - HTML Folder', () => {
 
       const content = await response.text();
       assert.ok(content.includes('<p>Drafts root index</p>'), 'Should serve index.plain.html for html-folder root');
+    } finally {
+      await project.stop();
+    }
+  });
+
+  it('renders a .plain.html requested directly as the fragment aem.page serves', async () => {
+    const cwd = await setupProject(path.join(__rootdir, 'test', 'fixtures', 'project'), testRoot);
+
+    const draftsFolder = path.join(cwd, 'drafts');
+    await fs.mkdir(draftsFolder, { recursive: true });
+    await fs.writeFile(path.join(draftsFolder, 'nav.plain.html'), `<div><h2>Nav</h2><p><a href="/">Home</a></p></div>
+<div><div class="metadata"><div><div>Title</div><div>Navigation</div></div></div></div>`);
+
+    const project = new HelixProject()
+      .withCwd(cwd)
+      .withLogger(console)
+      .withHttpPort(0)
+      .withProxyUrl('https://main--foo--bar.aem.page/')
+      .withHtmlFolder('drafts')
+      .withLiveReload(true);
+
+    await project.init();
+    try {
+      await project.start();
+
+      const response = await fetch(`http://127.0.0.1:${project.server.port}/drafts/nav.plain.html`);
+      assert.equal(response.status, 200);
+      assert.equal(response.headers.get('content-type'), 'text/html; charset=utf-8');
+
+      const content = await response.text();
+      assert.ok(!content.includes('<head>'), 'Should be a fragment, not a page');
+      assert.ok(!content.includes('LiveReload'), 'Should not inject live reload into a fragment');
+      assert.ok(content.includes('<h2 id="nav">Nav</h2>'), 'Should be rendered by the html pipeline');
+      assert.ok(!content.includes('class="metadata"'), 'Should not contain the metadata block');
+    } finally {
+      await project.stop();
+    }
+  });
+
+  it('falls back to the .plain.html content when the html pipeline fails to render it', async () => {
+    const { HelixProject: FailingPipelineProject } = await esmock('../src/server/HelixProject.js', {}, {
+      '../src/content/content-html-pipeline.js': {
+        renderContentHtml: async () => null,
+      },
+    });
+    const cwd = await setupProject(path.join(__rootdir, 'test', 'fixtures', 'project'), testRoot);
+
+    const draftsFolder = path.join(cwd, 'drafts');
+    await fs.mkdir(draftsFolder, { recursive: true });
+    await fs.writeFile(path.join(draftsFolder, 'broken.plain.html'), '<div><p>Unrendered</p></div>');
+
+    nock('https://main--foo--bar.aem.page')
+      .get('/head.html')
+      .reply(404);
+
+    const project = new FailingPipelineProject()
+      .withCwd(cwd)
+      .withLogger(console)
+      .withHttpPort(0)
+      .withProxyUrl('https://main--foo--bar.aem.page/')
+      .withHtmlFolder('drafts');
+
+    await project.init();
+    try {
+      await project.start();
+
+      const page = await (await fetch(`http://127.0.0.1:${project.server.port}/drafts/broken`)).text();
+      assert.ok(page.includes('<link rel="stylesheet" href="/styles.css"/>'), 'Should include head.html');
+      assert.ok(page.includes('<main><div><p>Unrendered</p></div></main>'), 'Should wrap the content as-is');
+
+      const fragment = await (await fetch(`http://127.0.0.1:${project.server.port}/drafts/broken.plain.html`)).text();
+      assert.equal(fragment, '<div><p>Unrendered</p></div>', 'Should serve the fragment as-is');
     } finally {
       await project.stop();
     }
