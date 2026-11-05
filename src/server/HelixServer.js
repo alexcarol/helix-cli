@@ -305,6 +305,7 @@ export class HelixServer extends BaseServer {
       headers: req.headers,
       org: this._project.org,
       site: this._project.site,
+      siteConfig: await this._project.getSiteConfig(),
     });
   }
 
@@ -555,6 +556,7 @@ export class HelixServer extends BaseServer {
               await this._project.metadataSheet.ensureLoaded();
             }
             const metadataSheetRows = this._project.metadataSheet?.getRows();
+            const siteConfig = await this._project.getSiteConfig();
             if (isPlainFallback) {
               if (liveReload) {
                 liveReload.registerFile(ctx.requestId, servedFilePath);
@@ -566,6 +568,7 @@ export class HelixServer extends BaseServer {
                 headers: req.headers,
                 org: this._project.org,
                 site: this._project.site,
+                siteConfig,
               });
               const fragment = rendered ?? utils.extractMainContent(htmlContent);
               res.set({
@@ -586,6 +589,7 @@ export class HelixServer extends BaseServer {
               headers: req.headers,
               org: this._project.org,
               site: this._project.site,
+              siteConfig,
             });
             if (rendered !== null) {
               htmlContent = rendered;

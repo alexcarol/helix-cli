@@ -72,6 +72,41 @@ function createLocalLoader(md, metadataSheetRows) {
 }
 
 /**
+ * The parts of a site's configuration (the admin API's site config, see
+ * https://www.aem.live/docs/admin.html#tag/siteConfig) that change how content renders:
+ * - `features.rendering.version`: 2 enables server-side section metadata. If unset, the html
+ *   pipeline enables it for sites `created` on or after 2026-05-01.
+ * - `features.html2md.unspreadLists`: html2md renders lists tight (no `<p>` in `<li>`). Content
+ *   stored in AEM's source bus (a `content.source.url` on https://api.aem.live/) always is.
+ * @typedef {object} SiteConfig
+ * @property {string} [created] ISO date the site was created
+ * @property {{ source?: { url?: string } }} [content] content source
+ * @property {object} [features] features, e.g.
+ *   `{ rendering: { version: 2 }, html2md: { unspreadLists: true } }`
+ */
+
+/**
+ * Used when the site's actual configuration is unknown: matches production for sites created
+ * since May 2026 with markup (e.g. da.live) content.
+ * @type {SiteConfig}
+ */
+export const DEFAULT_SITE_CONFIG = Object.freeze({
+  features: Object.freeze({
+    rendering: Object.freeze({ version: 2 }),
+  }),
+});
+
+/**
+ * Whether html2md unspreads lists for a site, as the admin service decides it.
+ * @param {SiteConfig} siteConfig
+ * @returns {boolean}
+ */
+function unspreadLists({ content, features }) {
+  return !!content?.source?.url?.startsWith('https://api.aem.live/')
+    || !!features?.html2md?.unspreadLists;
+}
+
+/**
  * @param {string} rawHtml body-only or partial HTML from content/, as stored by da.live
  * @param {object} [options]
  * @param {string} [options.path] request path, e.g. `/foo.html` or `/foo.plain.html`
@@ -84,6 +119,8 @@ function createLocalLoader(md, metadataSheetRows) {
  *   resolve a real host for canonical/og:url instead of a placeholder
  * @param {string} [options.org] the AEM org this content belongs to, if known
  * @param {string} [options.site] the AEM site this content belongs to, if known
+ * @param {SiteConfig} [options.siteConfig] the site's configuration, if known; defaults to
+ *   {@link DEFAULT_SITE_CONFIG}
  * @returns {Promise<string | null>} the rendered HTML (full document, or a bare fragment for
  *   `.plain.html` paths), or `null` if rendering failed and the caller should fall back to
  *   serving the raw file
@@ -96,9 +133,14 @@ export async function renderContentHtml(rawHtml, {
   headers = {},
   org = 'local',
   site = 'local',
+  siteConfig = DEFAULT_SITE_CONFIG,
 } = {}) {
   try {
-    const md = await html2md(rawHtml, { log, url: new URL(path, 'http://localhost').href });
+    const md = await html2md(rawHtml, {
+      log,
+      url: new URL(path, 'http://localhost').href,
+      unspreadLists: unspreadLists(siteConfig),
+    });
 
     const contentPath = toContentPath(path);
     const state = new PipelineState({
@@ -116,7 +158,8 @@ export async function renderContentHtml(rawHtml, {
         cdn: {},
         metadata: { source: ['metadata.json'] },
         headers: {},
-        features: { rendering: { version: 2 } },
+        created: siteConfig.created,
+        features: siteConfig.features ?? {},
         head: { html: headHtml },
       },
     });

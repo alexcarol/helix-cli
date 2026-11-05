@@ -1262,6 +1262,39 @@ describe('Helix Server - HTML Folder', () => {
     }
   });
 
+  it('renders .plain.html with the site config, when set', async () => {
+    const cwd = await setupProject(path.join(__rootdir, 'test', 'fixtures', 'project'), testRoot);
+
+    const draftsFolder = path.join(cwd, 'drafts');
+    await fs.mkdir(draftsFolder, { recursive: true });
+    await fs.writeFile(path.join(draftsFolder, 'styled.plain.html'), '<div><h1>Styled</h1><div class="section-metadata"><div><div>Style</div><div>highlight</div></div></div></div>');
+
+    nock('https://main--foo--bar.aem.page')
+      .get('/head.html')
+      .reply(404);
+
+    const project = new HelixProject()
+      .withCwd(cwd)
+      .withLogger(console)
+      .withHttpPort(0)
+      .withProxyUrl('https://main--foo--bar.aem.page/')
+      .withHtmlFolder('drafts')
+      .withSiteConfig({ features: { rendering: { version: 1 } } });
+
+    await project.init();
+    try {
+      await project.start();
+
+      for (const pathname of ['/drafts/styled', '/drafts/styled.plain.html']) {
+        // eslint-disable-next-line no-await-in-loop
+        const content = await (await fetch(`http://127.0.0.1:${project.server.port}${pathname}`)).text();
+        assert.ok(content.includes('class="section-metadata"'), `${pathname} should keep section metadata for the client`);
+      }
+    } finally {
+      await project.stop();
+    }
+  });
+
   it('falls back to the .plain.html content when the html pipeline fails to render it', async () => {
     const { HelixProject: FailingPipelineProject } = await esmock('../src/server/HelixProject.js', {}, {
       '../src/content/content-html-pipeline.js': {

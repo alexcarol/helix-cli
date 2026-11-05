@@ -104,6 +104,27 @@ export class HelixProject extends BaseProject {
     return this;
   }
 
+  /**
+   * Sets the site's configuration (or the parts of it that change how content renders), e.g. as
+   * returned by the admin API, so local rendering matches production.
+   * @param {import('../content/content-html-pipeline.js').SiteConfig} value
+   * @returns {HelixProject} this
+   */
+  withSiteConfig(value) {
+    this._siteConfig = value;
+    return this;
+  }
+
+  /**
+   * Returns the site's configuration used to render content locally, or `undefined` if unknown,
+   * in which case rendering uses production's defaults for new sites. Async so it can be loaded
+   * on demand (e.g. from the admin API).
+   * @returns {Promise<import('../content/content-html-pipeline.js').SiteConfig|undefined>}
+   */
+  async getSiteConfig() {
+    return this._siteConfig;
+  }
+
   get proxyUrl() {
     return this._proxyUrl;
   }

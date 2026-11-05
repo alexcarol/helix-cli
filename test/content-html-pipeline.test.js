@@ -208,6 +208,47 @@ describe('content-html-pipeline', () => {
     });
   });
 
+  describe('site config', () => {
+    const sectionMetadata = '<body><main><div><h1>Ramen</h1>'
+      + '<div class="section-metadata"><div><div>style</div><div>highlight</div></div></div>'
+      + '</div></main></body>';
+    const nestedList = '<body><main><div><ul>'
+      + '<li>Products<ul><li><a href="/a">A</a></li><li><a href="/b">B</a></li></ul></li>'
+      + '<li><a href="/c">Contact</a></li>'
+      + '</ul></div></main></body>';
+    const render = async (input, siteConfig) => (await renderContentHtml(input, {
+      path: '/foo.plain.html', log: console, siteConfig,
+    })).replace(/>\s+</g, '><');
+
+    it('defaults to server-side section metadata and lists that are not unspread', async () => {
+      assert.ok((await render(sectionMetadata)).includes('<div class="highlight">'));
+      assert.ok((await render(nestedList)).includes('<li><p>Products</p>'));
+    });
+
+    it('keeps section metadata for the client with rendering version 1', async () => {
+      const html = await render(sectionMetadata, { features: { rendering: { version: 1 } } });
+      assert.ok(html.includes('class="section-metadata"'));
+    });
+
+    it('decides on section metadata by creation date when no rendering version is set', async () => {
+      assert.ok((await render(sectionMetadata, { created: '2026-04-30T00:00:00Z' })).includes('class="section-metadata"'));
+      assert.ok((await render(sectionMetadata, { created: '2026-05-01T00:00:00Z' })).includes('<div class="highlight">'));
+    });
+
+    it('unspreads lists with features.html2md.unspreadLists', async () => {
+      const html = await render(nestedList, { features: { html2md: { unspreadLists: true } } });
+      assert.ok(html.includes('<li>Products'));
+      assert.ok(!html.includes('<p>'));
+    });
+
+    it('unspreads lists for content stored in the source bus', async () => {
+      const html = await render(nestedList, {
+        content: { source: { url: 'https://api.aem.live/acme/sites/website/source/' } },
+      });
+      assert.ok(!html.includes('<p>'));
+    });
+  });
+
   describe('.plain.html', () => {
     it('returns the processed fragment, not a full document, for a .plain.html path', async () => {
       const input = '<body><main><div><p>Hello :smile: world</p></div></main></body>';

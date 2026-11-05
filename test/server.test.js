@@ -1460,6 +1460,46 @@ describe('Helix Server', () => {
       }
     });
 
+    it('renders content/ with the site config, when set', async () => {
+      const cwd = await setupProject(path.join(__rootdir, 'test', 'fixtures', 'project'), testRoot);
+      await fse.ensureDir(path.join(cwd, CONTENT_DIR));
+      await fse.writeFile(
+        path.join(cwd, CONTENT_DIR, 'index.html'),
+        '<body><main><div>'
+        + '<h1>Ramen</h1>'
+        + '<div class="section-metadata">'
+        + '<div><div>style</div><div>highlight, dark</div></div>'
+        + '</div>'
+        + '</div></main></body>',
+      );
+
+      nock('http://main--foo--bar.aem.page')
+        .get('/head.html')
+        .reply(200, '', { 'content-type': 'text/html' })
+        .get('/metadata.json')
+        .reply(200, { data: [] });
+
+      const project = new HelixProject()
+        .withCwd(cwd)
+        .withProxyUrl('http://main--foo--bar.aem.page')
+        .withHttpPort(0)
+        .withSiteConfig({ features: { rendering: { version: 1 } } });
+      await project.init();
+      try {
+        await project.start();
+        for (const pathname of ['/index.html', '/index.plain.html']) {
+          // eslint-disable-next-line no-await-in-loop
+          const resp = await getFetch()(`http://127.0.0.1:${project.server.port}${pathname}`);
+          assert.strictEqual(resp.status, 200);
+          // eslint-disable-next-line no-await-in-loop
+          const body = await resp.text();
+          assert.ok(body.includes('class="section-metadata"'), `${pathname} should keep section metadata for the client`);
+        }
+      } finally {
+        await project.stop();
+      }
+    });
+
     it('falls back to raw content merged with local head.html when the pipeline fails to render', async () => {
       const cwd = await setupProject(path.join(__rootdir, 'test', 'fixtures', 'project'), testRoot);
       await fse.ensureDir(path.join(cwd, CONTENT_DIR));
