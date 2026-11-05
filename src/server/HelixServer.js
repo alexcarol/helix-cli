@@ -284,22 +284,45 @@ export class HelixServer extends BaseServer {
   }
 
   /**
-   * Transforms .plain.html content into complete HTML with head.html
+   * Transforms .plain.html content into complete HTML with head.html.
+   * The fragment is rendered like aem.page renders the same content: wrapped in <main> and run
+   * through the same html2md -> helix-html-pipeline chain used for content/. If the pipeline
+   * fails to render it, the minimal local transformation is used instead.
    * @param {string} plainHtmlFile path to .plain.html file
+   * @param {Express.Request} req request
    * @returns {Promise<string>} complete HTML document
    */
-  async transformPlainHtml(plainHtmlFile) {
+  async transformPlainHtml(plainHtmlFile, req) {
     const plainContent = await readFile(plainHtmlFile, 'utf-8');
+
+    await this._project.headHtml.update();
+    const headHtml = this._project.headHtml.localHtml || '';
+
+    if (this._project.metadataSheet) {
+      this._project.metadataSheet.setCookie(req.headers.cookie || '');
+      await this._project.metadataSheet.ensureLoaded();
+    }
+    const rendered = await renderContentHtml(
+      utils.plainHtmlToContentDocument(plainContent),
+      {
+        path: req.path,
+        log: this.log,
+        headHtml,
+        metadataSheetRows: this._project.metadataSheet?.getRows(),
+        headers: req.headers,
+        org: this._project.org,
+        site: this._project.site,
+      },
+    );
+    if (rendered !== null) {
+      return rendered;
+    }
 
     // Extract metadata and clean content
     const { content, metadata } = utils.extractMetadataBlock(plainContent);
 
     // Extract default metadata values from content
     const defaults = utils.extractDefaultMetadata(content);
-
-    // Get head HTML using existing HeadHtmlSupport
-    await this._project.headHtml.update();
-    const headHtml = this._project.headHtml.localHtml || '';
 
     // Generate meta tags from metadata with defaults
     const metaTags = utils.generateMetaTags(metadata, defaults);
@@ -350,7 +373,7 @@ export class HelixServer extends BaseServer {
     // Load content (handle .plain.html transformation)
     let htmlContent;
     if (resolvedFile.isPlain) {
-      htmlContent = await this.transformPlainHtml(resolvedFile.file);
+      htmlContent = await this.transformPlainHtml(resolvedFile.file, req);
     } else {
       htmlContent = await readFile(resolvedFile.file, 'utf-8');
     }

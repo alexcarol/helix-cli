@@ -880,6 +880,40 @@ window.LiveReloadOptions = {
     }
     return main.children.map((child) => toHtml(child)).join('');
   },
+
+  /**
+   * Turns a .plain.html fragment into the document shape html2md expects: a <main> whose
+   * children are section <div>s (html2md drops anything else). Runs of top-level content outside
+   * a section <div> are wrapped in a section of their own. Content that already has a <main> is
+   * returned unchanged.
+   * @param {string} html .plain.html content
+   * @returns {string} html with a <main> made of sections
+   */
+  plainHtmlToContentDocument(html) {
+    if (/<main[\s>]/i.test(html)) {
+      return html;
+    }
+    const tree = unified().use(rehypeParse, { fragment: true }).parse(html);
+    const sections = [];
+    let stray = null;
+    tree.children.forEach((node) => {
+      if (node.type === 'element' && node.tagName === 'div') {
+        stray = null;
+        sections.push(node);
+      } else if (node.type === 'comment' || (node.type === 'text' && !node.value.trim())) {
+        (stray?.children ?? sections).push(node);
+      } else {
+        if (!stray) {
+          stray = {
+            type: 'element', tagName: 'div', properties: {}, children: [],
+          };
+          sections.push(stray);
+        }
+        stray.children.push(node);
+      }
+    });
+    return `<main>${toHtml({ type: 'root', children: sections })}</main>`;
+  },
 };
 
 export default Object.freeze(utils);

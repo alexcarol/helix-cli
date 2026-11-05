@@ -30,6 +30,11 @@ describe('Helix Server - HTML Folder', () => {
   beforeEach(async () => {
     nock = new Nock();
     nock.enableNetConnect(/127.0.0.1/);
+    // .plain.html rendering applies the project's metadata.json sheet, like aem.page
+    nock('https://main--foo--bar.aem.page')
+      .get('/metadata.json')
+      .optionally()
+      .reply(404);
     testRoot = await createTestRoot();
   });
 
@@ -257,8 +262,8 @@ describe('Helix Server - HTML Folder', () => {
       assert.equal(response.headers.get('content-type'), 'text/html; charset=utf-8');
 
       const content = await response.text();
-      assert.ok(content.includes('<html><head>'), 'Should include <html><head> wrapper');
-      assert.ok(content.includes('</head><body>'), 'Should include </head><body> structure');
+      assert.match(content, /<html>\s*<head>/, 'Should include <html><head> wrapper');
+      assert.match(content, /<\/head>\s*<body>/, 'Should include </head><body> structure');
       assert.ok(content.includes('<header></header>'), 'Should include empty header');
       assert.ok(content.includes('<main>'), 'Should include main tag');
       assert.ok(content.includes('<p>Plain content here</p>'), 'Should contain plain content in main');
@@ -437,7 +442,7 @@ describe('Helix Server - HTML Folder', () => {
       assert.equal(response.status, 200);
 
       const content = await response.text();
-      assert.ok(content.includes('<html><head>'), 'Should include HTML structure');
+      assert.match(content, /<html>\s*<head>/, 'Should include HTML structure');
       assert.ok(content.includes('<main>'), 'Should include main tag');
       assert.ok(content.includes('<p>Nested plain content</p>'), 'Should contain nested plain content');
       assert.ok(content.includes('</main>'), 'Should close main tag');
@@ -468,6 +473,11 @@ describe('Helix Server - HTML Folder', () => {
     await project.init();
     try {
       await project.start();
+
+      // the normalized /outside is not served from drafts, so it goes to the proxy
+      nock('https://main--foo--bar.aem.page')
+        .get('/outside')
+        .reply(404);
 
       // Try to access file outside drafts using path traversal
       const response = await fetch(`http://127.0.0.1:${project.server.port}/drafts/../outside`);
@@ -507,8 +517,8 @@ describe('Helix Server - HTML Folder', () => {
       assert.equal(response.status, 200);
 
       const content = await response.text();
-      assert.ok(content.includes('<html><head>'), 'Should include HTML structure');
-      assert.ok(content.includes('</head><body>'), 'Should include body tag');
+      assert.match(content, /<html>\s*<head>/, 'Should include HTML structure');
+      assert.match(content, /<\/head>\s*<body>/, 'Should include body tag');
       assert.ok(content.includes('<main>'), 'Should include main tag');
       assert.ok(content.includes('<p>Content without head</p>'), 'Should contain plain content');
       assert.ok(content.includes('</main>'), 'Should close main tag');
